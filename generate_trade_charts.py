@@ -28,10 +28,9 @@ def main():
     df_trades = pd.read_csv(TRADES_CSV)
     df_trades = df_trades.head(NUM_TRADES_TO_PROCESS)
 
-    # 2. Setup Plotting Style (Red/Green Candles)
-    # 'up' = close > open (Green), 'down' = close < open (Red)
+    # 2. Setup Plotting Style
     mc = mpf.make_marketcolors(up='g', down='r', edge='i', wick='i', volume='in')
-    s  = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
+    s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
 
     print(f"Starting chart generation for {NUM_TRADES_TO_PROCESS} trades...")
 
@@ -39,80 +38,104 @@ def main():
         trade_num = row['Trade_Num']
         ticker = row['Ticker']
         entry_date_str = row['Entry_Date']
-        
+
         try:
             entry_date = pd.to_datetime(entry_date_str)
         except Exception as e:
             print(f"[{trade_num}] Skipping {ticker}: Invalid Entry_Date format. {e}")
             continue
 
-        # 3. Determine Output Directory (e.g., trade_charts/2015/April/)
+        # 3. Output Directory
         year_str = entry_date.strftime('%Y')
-        month_str = entry_date.strftime('%B') # Full month name (e.g., December)
+        month_str = entry_date.strftime('%B')
         output_dir = os.path.join(OUTPUT_BASE_DIR, year_str, month_str)
         os.makedirs(output_dir, exist_ok=True)
 
         # 4. Load Price Data
         price_file = os.path.join(PRICE_DATA_DIR, f"{ticker}.csv")
         if not os.path.exists(price_file):
-            print(f"[{trade_num}] Skipping {ticker}: Price file not found at {price_file}")
+            print(f"[{trade_num}] Skipping {ticker}: Price file not found")
             continue
 
-        # Read price CSV, handling the weird row 2 header issue in yfinance data
         df_price = pd.read_csv(price_file, parse_dates=['Date'], index_col='Date')
-        df_price = df_price[df_price.index.notna()] # Drop rows where Date is NaN (the garbage header row)
-        
-        # Ensure required columns exist
+        df_price = df_price[df_price.index.notna()]
+
         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         if not all(col in df_price.columns for col in required_cols):
             print(f"[{trade_num}] Skipping {ticker}: Missing OHLCV columns.")
             continue
 
-        # 5. Handle Weekends/Holidays (Entry date might not be in trading data)
+        df_price[required_cols] = df_price[required_cols].apply(pd.to_numeric, errors='coerce')
+
+        # 5. Handle non-trading entry dates
         if entry_date not in df_price.index:
-            # Find the next valid trading day on or after the entry date
             valid_dates = df_price.index[df_price.index >= entry_date]
             if len(valid_dates) == 0:
-                print(f"[{trade_num}] Skipping {ticker}: Entry date is beyond available price data.")
+                print(f"[{trade_num}] Skipping {ticker}: Entry date beyond data.")
                 continue
             entry_date = valid_dates[0]
 
-        # 6. Slice Data (20 days before and 20 days after)
+        # 6. Slice Data
         entry_idx = df_price.index.get_loc(entry_date)
         start_idx = max(0, entry_idx - DAYS_BEFORE)
         end_idx = min(len(df_price) - 1, entry_idx + DAYS_AFTER)
-
         chart_df = df_price.iloc[start_idx:end_idx + 1].copy()
 
         if len(chart_df) < 2:
-            print(f"[{trade_num}] Skipping {ticker}: Not enough price data around entry.")
+            print(f"[{trade_num}] Skipping {ticker}: Not enough data.")
             continue
 
-        # 7. Prepare Annotations (Entry, SL, TP Lines)
-        entry_price = row['Entry_Price']
-        sl_price = row['SL']
-        tp_price = row['TP']
+        # 7. Prices
+        entry_price = pd.to_numeric(row.get('Entry_Price'), errors='coerce')
+        sl_price = pd.to_numeric(row.get('SL'), errors='coerce')
+        tp_price = pd.to_numeric(row.get('TP'), errors='coerce')
 
-        hlines_dict = []
-        # Only draw SL/TP if they are somewhat reasonable compared to the chart data
         price_min = chart_df['Low'].min()
         price_max = chart_df['High'].max()
-        padding = (price_max - price_min) * 0.5
 
-        if price_min - padding < entry_price < price_max + padding:
-            hlines_dict.append(dict(hlines=[entry_price], colors=['blue'], linewidths=1.5, linestyle='--'))
-        if price_min - padding < sl_price < price_max + padding:
-            hlines_dict.append(dict(hlines=[sl_price], colors=['red'], linewidths=1.2, linestyle='-.'))
-        if price_min - padding < tp_price < price_max + padding:
-            hlines_dict.append(dict(hlines=[tp_price], colors=['green'], linewidths=1.2, linestyle='-.'))
+        # FIXED hlines structure
+        hlines_dict = None
+        hlines = []
+        colors = []
+        linewidths = []
+        linestyles = []
 
-        # Vertical line for Entry Day
+        if pd.notna(price_min) and pd.notna(price_max):
+            padding = (price_max - price_min) * 0.1  # tighter padding
+
+            if pd.notna(entry_price) and (price_min - padding) < entry_price < (price_max + padding):
+                hlines.append(entry_price)
+                colors.append('blue')
+                linewidths.append(1.5)
+                linestyles.append('--')
+
+            if pd.notna(sl_price) and (price_min - padding) < sl_price < (price_max + padding):
+                hlines.append(sl_price)
+                colors.append('red')
+                linewidths.append(1.2)
+                linestyles.append('-.')
+
+            if pd.notna(tp_price) and (price_min - padding) < tp_price < (price_max + padding):
+                hlines.append(tp_price)
+                colors.append('green')
+                linewidths.append(1.2)
+                linestyles.append('-.')
+
+        if hlines:
+            hlines_dict = dict(
+                hlines=hlines,
+                colors=colors,
+                linewidths=linewidths,
+                linestyle=linestyles
+            )
+
+        # Vertical line
         vlines_dict = dict(vlines=[entry_date], colors=['purple'], linewidths=1.5, linestyle='-')
 
-        # 8. Build Metrics Text Box
+        # 8. Metrics Box
         result = row['Result']
         result_color = 'green' if result == 'Win' else 'red'
-        
+
         metrics_text = (
             f"Result: {result} ({get_safe_value(row['PnL_Pct'])}%)\n"
             f"Exit Reason: {row['Exit_Reason']}\n"
@@ -127,35 +150,35 @@ def main():
             f"Hold Days: {int(row['Hold_Days'])}"
         )
 
-        # 9. Generate Plot
+        # 9. Plot
         fig, axes = mpf.plot(
             chart_df,
             type='candle',
             style=s,
             volume=True,
             title=f"\n{ticker} | Trade #{trade_num} | {entry_date_str}",
-            hlines=hlines_dict if hlines_dict else None,
+            hlines=hlines_dict,
             vlines=vlines_dict,
             returnfig=True
         )
 
-        # Add text box to the figure
-        fig.text(0.02, 0.95, metrics_text, fontsize=9,
-                 verticalalignment='top',
-                 fontfamily='monospace',
-                 bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8, edgecolor='gray'))
+        fig.text(
+            0.02, 0.95, metrics_text,
+            fontsize=9,
+            verticalalignment='top',
+            fontfamily='monospace',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8, edgecolor='gray')
+        )
 
-        # 10. Save Image
+        # 10. Save
         output_filename = f"{trade_num}_{ticker}_{entry_date_str}.png"
         output_path = os.path.join(output_dir, output_filename)
-        
-        # bbox_inches='tight' prevents text from being cut off
+
         fig.savefig(output_path, dpi=150, bbox_inches='tight', pad_inches=0.5)
-        
-        # Close figure to free memory
+
         import matplotlib.pyplot as plt
         plt.close(fig)
-        
+
         print(f"[{trade_num}] Saved: {output_path}")
 
     print("Done!")
