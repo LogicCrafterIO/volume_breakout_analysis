@@ -1,0 +1,14 @@
+{
+  "name": "trade-chart-viewer",
+  "version": "1.0.0",
+  "description": "Browse and view trade charts in hierarchical folder structure",
+  "scripts": {
+    "start": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && node server.js",
+    "client": "cd client && npm start",
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
